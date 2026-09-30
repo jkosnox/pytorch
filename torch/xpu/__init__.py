@@ -491,6 +491,8 @@ def get_device_properties(
     - ``version`` (str): runtime version.
     - ``max_compute_units`` (int): number of parallel compute units.
     - ``gpu_eu_count`` (int): number of EUs (Execution Unit).
+    - ``gpu_eu_count_per_subslice`` (int): number of EUs in a subslice.
+    - ``gpu_hw_threads_per_eu`` (int): number of hardware threads per EU.
     - ``max_work_group_size``: (int): maximum number of work-items permitted in a work-group.
     - ``max_num_sub_groups`` (int): maximum number of sub-groups supported in a work-group.
     - ``memory_clock_rate`` (int) maximum clock rate of device's global memory in MHz.

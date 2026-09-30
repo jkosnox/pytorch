@@ -178,4 +178,30 @@ TORCH_LIBRARY_FRAGMENT(inductor_prims, m) {
       {at::Tag::pt2_compliant_tag});
 }
 
+// inductor_reserve_rng_state has no Tensor arguments, and boxed dispatch only
+// derives dispatch keys from Tensors, so route on the generator's own key set
+// to the backend kernel (CUDA/HIP in inductor_ops_gpu.cpp, XPU in
+// inductor_ops_xpu.cpp).
+static void inductor_reserve_rng_state_backend_select(
+    const c10::OperatorHandle& op,
+    c10::DispatchKeySet /*ks*/,
+    torch::jit::Stack* stack) {
+  const auto& gen_ivalue = (*stack)[stack->size() - 2];
+  TORCH_CHECK(
+      !gen_ivalue.isNone(),
+      "inductor_reserve_rng_state: an explicit generator is required");
+  const auto gen = gen_ivalue.toGenerator();
+  TORCH_CHECK(
+      gen.defined(),
+      "inductor_reserve_rng_state: an explicit generator is required");
+  op.redispatchBoxed(gen.key_set(), stack);
+}
+
+TORCH_LIBRARY_IMPL(inductor_prims, BackendSelect, m) {
+  m.impl(
+      "inductor_reserve_rng_state",
+      torch::CppFunction::makeFromBoxedFunction<
+          &inductor_reserve_rng_state_backend_select>());
+}
+
 } // namespace torch::inductor

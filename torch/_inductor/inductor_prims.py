@@ -99,25 +99,43 @@ randint = make_prim(
 )
 
 
+def xpu_rng_launch_config(device: torch.device) -> tuple[int, int]:
+    """
+    Return (group_size, max_groups) used by the eager XPU Philox random
+    kernels on `device`.
+
+    Mirrors calc_execution_policy() in torch-xpu-ops
+    src/ATen/native/xpu/sycl/DistributionTemplates.h, which launches work-groups
+    of syclMaxWorkItemsPerSubSlice() work-items, capped at
+    getDeviceMaxWorkItems() work-items in total.
+    """
+    prop = torch.xpu.get_device_properties(device)
+    simd_width = max(prop.sub_group_sizes)
+    group_size = simd_width * prop.gpu_eu_count_per_subslice
+    max_work_items = simd_width * prop.gpu_eu_count * prop.gpu_hw_threads_per_eu
+    return group_size, max_work_items // group_size
+
+
 def _reserve_rng_state(device: torch.device, used_offset):
     """
-    Reserve `used_offset` 32-bit Philox samples on the given CUDA device and
-    return (seed, base), where base is in Philox-4x32 units.
+    Reserve `used_offset` 32-bit Philox samples on the given CUDA or XPU
+    device and return (seed, base), where base is in Philox-4x32 units.
 
     This mirrors how Inductor accounts for Philox consumption so compiled
     dropout kernels can reconstruct eager RNG state.
     """
     dev = device if isinstance(device, torch.device) else torch.device(device)
-    if dev.type != "cuda":
-        # Only CUDA devices have Philox-based CUDAGenerator. For non-CUDA
+    if dev.type not in ("cuda", "xpu"):
+        # Only CUDA and XPU devices have a Philox-based generator. For other
         # devices this prim should be dead code and never actually run.
         return 0, 0
 
+    device_module = getattr(torch, dev.type)
     dev_index = _get_device_index(dev, optional=True)
     if dev_index is None:
-        dev_index = torch.cuda.current_device()
+        dev_index = device_module.current_device()
 
-    gen = torch.cuda.default_generators[dev_index]
+    gen = device_module.default_generators[dev_index]
     seed_t, off_t, intra_t = torch.ops.inductor_prims.inductor_reserve_rng_state(
         gen, used_offset
     )

@@ -11,44 +11,38 @@
 #include <ATen/ops/zeros.h>
 #endif
 
-#if defined(USE_CUDA) || defined(USE_ROCM)
-#include <ATen/cuda/CUDAGeneratorImpl.h>
-#endif
+#include <ATen/xpu/XPUGeneratorImpl.h>
 
 namespace torch::inductor {
 using namespace at;
 
-#if defined(USE_CUDA) || defined(USE_ROCM)
-
-// Reserves RNG state for Inductor with CUDA Graph support.
+// XPU counterpart of inductor_reserve_rng_state in inductor_ops_gpu.cpp.
 //
-// This function allows Inductor to reserve a specific amount of RNG offset
-// (increment) for a kernel. It is designed to be safe for CUDA Graph capture
-// by explicitly handling the internal generator state via public APIs.
+// Reserves `increment` Philox samples on an XPU generator, exactly as the
+// eager XPU random kernels do via XPUGeneratorImpl::philox_xpu_state, so that
+// Inductor's eager-aligned random kernels (config.align_random_eager) consume
+// the same stream and advance the generator by the same amount.
 //
-// Behavior:
-// - Graph Mode: Advances the generator state and returns pointers (wrapped as
-// tensors) to the extragraph state. These tensors effectively point to the
-// GPU memory that will be updated by `replay_prologue`.
-// - Eager Mode: Advances the generator state and returns concrete values
-// wrapped in 1D tensors to maintain shape consistency.
-//
-// -param gen The CUDA generator to use.
+// -param gen The XPU generator to use.
 // -param increment The number of RNG values to reserve.
 // -return A tuple of (Seed Tensor, Offset Tensor, Intragraph Offset CPU
 // Tensor).
-static std::tuple<Tensor, Tensor, Tensor> inductor_reserve_rng_state_impl(
+static std::tuple<Tensor, Tensor, Tensor> inductor_reserve_rng_state_xpu_impl(
     const Generator& generator,
     c10::SymInt increment) {
-  auto* gen_impl = at::check_generator<at::CUDAGeneratorImpl>(generator);
+  auto* gen_impl = at::check_generator<at::XPUGeneratorImpl>(generator);
 
   const auto dev_opts =
       at::TensorOptions().dtype(at::kLong).device(generator.device());
   const auto cpu_opts = at::TensorOptions().dtype(at::kLong).device(at::kCPU);
 
   int64_t inc = increment.expect_int();
-  const at::PhiloxCudaState st =
-      gen_impl->philox_cuda_state(static_cast<uint64_t>(inc));
+  at::PhiloxXpuState st;
+  {
+    // See Note [Acquire lock when using random generators]
+    std::lock_guard<std::mutex> lock(gen_impl->mutex_);
+    st = gen_impl->philox_xpu_state(static_cast<uint64_t>(inc));
+  }
 
   if (st.captured_) {
     auto seed_t = at::from_blob(
@@ -69,16 +63,10 @@ static std::tuple<Tensor, Tensor, Tensor> inductor_reserve_rng_state_impl(
   return {std::move(seed_t), std::move(off_t), std::move(intra_t)};
 }
 
-TORCH_LIBRARY_IMPL(inductor_prims, CUDA, m) {
+TORCH_LIBRARY_IMPL(inductor_prims, XPU, m) {
   m.impl(
-      "inductor_reserve_rng_state", TORCH_FN(inductor_reserve_rng_state_impl));
+      "inductor_reserve_rng_state",
+      TORCH_FN(inductor_reserve_rng_state_xpu_impl));
 }
-
-TORCH_LIBRARY_IMPL(inductor_prims, HIP, m) {
-  m.impl(
-      "inductor_reserve_rng_state", TORCH_FN(inductor_reserve_rng_state_impl));
-}
-
-#endif
 
 } // namespace torch::inductor

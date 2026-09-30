@@ -3194,6 +3194,9 @@ def get_threads_per_round(device: torch.device):
         threads_per_round = (
             prop.multi_processor_count * prop.max_threads_per_multi_processor
         )
+    elif device.type == "xpu":
+        group_size, max_groups = inductor_prims.xpu_rng_launch_config(device)
+        threads_per_round = group_size * max_groups
     else:
         _CPU_GRAIN_SIZE = 32768
         threads_per_round = _CPU_GRAIN_SIZE
@@ -3222,11 +3225,13 @@ def inductor_random(
     ).make_indexer()
     seed_loader = seed.make_loader()
 
-    if config.align_random_eager and device.type == "cuda" and mode == "rand":
+    if config.align_random_eager and device.type in ("cuda", "xpu") and mode == "rand":
         threads_per_round = get_threads_per_round(device)
 
         def _vec_from_dtype(dt: torch.dtype) -> int:
-            if dt in (torch.float16, torch.bfloat16):
+            # The eager XPU dropout kernel vectorizes by at most 4 for all
+            # dtypes (one Philox4x32 draw per thread per iteration).
+            if device.type == "cuda" and dt in (torch.float16, torch.bfloat16):
                 return 8
             return 4
 

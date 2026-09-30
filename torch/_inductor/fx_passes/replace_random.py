@@ -38,6 +38,17 @@ def _shape_to_offset(shape, device: torch.device):
     elif isinstance(device, str):
         device = torch.device(device)
 
+    if device.type == "xpu":
+        # Mirrors calc_execution_policy() used by the eager XPU dropout kernel.
+        group_size, max_groups = inductor_prims.xpu_rng_launch_config(device)
+        unroll = 4
+        rand4_engine_calls = 4
+        num_groups = (nelem + group_size - 1) // group_size
+        num_groups = torch.sym_min(num_groups, max_groups)
+        return (
+            (nelem - 1) // (group_size * num_groups * unroll) + 1
+        ) * rand4_engine_calls
+
     if device.type != "cuda":
         return 0
 
@@ -215,7 +226,7 @@ def replace_random(
     device = get_device(device)
     replacement_fn = replacement
 
-    if mode == "rand" and config.align_random_eager and device.type == "cuda":
+    if mode == "rand" and config.align_random_eager and device.type in ("cuda", "xpu"):
         # Only enable when align_random_eager is on.
         def replacement_align(size):
             offset = _shape_to_offset(size, device)
